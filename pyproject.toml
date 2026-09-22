@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scientific-research-harness"
+version = "0.1.0"
+description = "A local, source-bound evidence harness for Codex research projects"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Scientific Research Harness contributors"}]
+dependencies = [
+  "sqlite-vec>=0.1.9,<0.2",
+]
+
+[project.optional-dependencies]
+semantic = ["fastembed>=0.8,<0.9"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+srh = "research_harness.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+research_harness = ["templates/skills/*/SKILL.md", "templates/skills/*/references/*.md"]

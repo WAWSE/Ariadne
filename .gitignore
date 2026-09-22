@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.research/
+.codex/
+.agents/skills/
+demo-project/
+demo-hooks/
+demo hooks/
+demo-debug*/
+tmp-*/
+wheel-smoke-*/
+wheel-smoke-target/
+wheel-out/
+srh-*-smoke-*/
+srh-final-smoke-*/
+audit-hook-temp/
+.cache/
+dist/
+build/

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "question": "When is the synthetic cue-gating mechanism transferable across contexts?",
+  "active_hypotheses": ["hypothesis:cross-domain-bridge"],
+  "unresolved_hypotheses": ["hypothesis:cross-domain-bridge"],
+  "recent_decisions": ["decision:retain-opposition"],
+  "next_action": "Review the planned experiment and run it only with its bounded budget.",
+  "budget": {"time_minutes": 10, "trials": 1000},
+  "notes": [
+    "This state is a synthetic demo snapshot.",
+    "Retrieval relevance and graph paths are not scientific confidence."
+  ]
+}

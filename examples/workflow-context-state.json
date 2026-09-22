@@ -1,0 +1,14 @@
+{
+  "question": "In the synthetic target task, does volatility bound the cue-transfer proposal?",
+  "active_hypotheses": ["hypothesis:workflow-transfer"],
+  "unresolved_hypotheses": ["hypothesis:workflow-transfer"],
+  "recent_decisions": ["decision:workflow-boundary-first"],
+  "next_action": "Old saved action: reread the synthetic source abstract before choosing a test.",
+  "current_route": "Test the volatility boundary before broadening the synthetic transfer proposal.",
+  "parked_alternatives": ["Preparation explanation remains parked, not rejected."],
+  "reopen_triggers": ["Reopen preparation if the stable-versus-volatile comparison contradicts the predicted interaction."],
+  "notes": [
+    "Synthetic workflow fixture: it asserts no real paper or scientific result.",
+    "An explicit current focus must override this old next action."
+  ]
+}

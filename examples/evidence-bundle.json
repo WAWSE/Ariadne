@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "id": "paper:synthetic-source",
+      "type": "paper",
+      "title": "Synthetic source card: intermittent cue gating",
+      "summary": "A fictional, explicitly synthetic source used only to exercise the research graph.",
+      "tags": ["synthetic", "source-domain", "cue-gating"],
+      "data": {
+        "url": "https://example.invalid/srh/synthetic-source",
+        "identifiers": {},
+        "read_scope": "abstract",
+        "version": "demo-1"
+      }
+    },
+    {
+      "id": "paper:synthetic-opposing",
+      "type": "paper",
+      "title": "Synthetic opposing finding: cue gating is context-dependent",
+      "summary": "A fictional counterexample retained as a separate source card; it is not a real publication.",
+      "tags": ["synthetic", "opposing", "boundary-condition"],
+      "data": {
+        "url": "https://example.invalid/srh/synthetic-opposing",
+        "identifiers": {},
+        "read_scope": "abstract",
+        "version": "demo-1"
+      }
+    },
+    {
+      "id": "evidence:source-mechanism",
+      "type": "evidence",
+      "title": "Synthetic source observation",
+      "summary": "Observed excerpt from the synthetic source card.",
+      "tags": ["synthetic", "observed"],
+      "data": {
+        "paper_id": "paper:synthetic-source",
+        "locator": "abstract, paragraph 1",
+        "excerpt": "Synthetic source text: intermittent cues were associated with faster gating in the toy task.",
+        "source_uri": "https://example.invalid/srh/synthetic-source",
+        "verification": "demo fixture; not independently verified"
+      }
+    },
+    {
+      "id": "evidence:opposing-finding",
+      "type": "evidence",
+      "title": "Synthetic opposing observation",
+      "summary": "Observed excerpt that limits transfer of the source mechanism.",
+      "tags": ["synthetic", "contradicting"],
+      "data": {
+        "paper_id": "paper:synthetic-opposing",
+        "locator": "abstract, paragraph 2",
+        "excerpt": "Synthetic opposing text: the gating effect disappeared when context volatility increased.",
+        "source_uri": "https://example.invalid/srh/synthetic-opposing",
+        "verification": "demo fixture; not independently verified"
+      }
+    },
+    {
+      "id": "claim:reported-gating",
+      "type": "claim",
+      "title": "Reported cue-gating association",
+      "summary": "A reported association in the synthetic source, not a causal conclusion.",
+      "tags": ["synthetic", "reported"],
+      "data": {
+        "origin": "author",
+        "status": "reported",
+        "evidence_ids": ["evidence:source-mechanism"],
+        "conditions": ["stable toy-task context"],
+        "alternative_explanations": ["selection or measurement artifact"]
+      }
+    },
+    {
+      "id": "mechanism:cue-gating",
+      "type": "mechanism",
+      "title": "Cue gating as a proposed mechanism",
+      "summary": "Mechanistic interpretation kept distinct from the reported association.",
+      "tags": ["synthetic", "mechanism", "interpretation"],
+      "data": {
+        "origin": "assistant",
+        "status": "proposed",
+        "evidence_ids": ["evidence:source-mechanism"],
+        "conditions": ["stable toy-task context"]
+      }
+    },
+    {
+      "id": "hypothesis:cross-domain-bridge",
+      "type": "hypothesis",
+      "title": "Cross-domain bridge: gating may reduce target-task switching cost",
+      "summary": "A proposed transfer hypothesis; source evidence does not establish target-domain support.",
+      "tags": ["synthetic", "cross-domain", "proposed"],
+      "data": {
+        "prediction": "Under stable context, an intermittent cue reduces switching cost in the target toy task.",
+        "alternatives": ["cue changes response preparation without gating", "apparent effect is task-specific"],
+        "test": "Pre-register cue schedule and compare switching-cost distributions under stable and volatile contexts.",
+        "status": "proposed",
+        "evidence_ids": ["evidence:source-mechanism", "evidence:opposing-finding"]
+      }
+    },
+    {
+      "id": "experiment:bridge-test",
+      "type": "experiment",
+      "title": "Planned toy transfer test",
+      "summary": "Planned experiment only; no run or outcome is implied by this fixture.",
+      "tags": ["synthetic", "planned"],
+      "data": {
+        "hypothesis_id": "hypothesis:cross-domain-bridge",
+        "status": "planned",
+        "command": "python demo/bridge_test.py --seed 17",
+        "budget": "10 minutes CPU; 1000 toy trials",
+        "config": {"context": ["stable", "volatile"], "cue": ["intermittent", "continuous"]},
+        "seed": 17,
+        "code_ref": "demo/bridge_test.py",
+        "data_ref": "synthetic generated observations",
+        "metrics": ["switching_cost", "error_rate"],
+        "artifacts": [],
+        "outcome": null
+      }
+    },
+    {
+      "id": "decision:retain-opposition",
+      "type": "decision",
+      "title": "Retain opposing finding and test context boundary",
+      "summary": "The next action is a bounded transfer test rather than upgrading the hypothesis.",
+      "tags": ["synthetic", "decision"],
+      "data": {
+        "reason": "The source observation and opposing context-dependent finding should remain distinct.",
+        "evidence_ids": ["evidence:source-mechanism", "evidence:opposing-finding"],
+        "next_action": "Run experiment:bridge-test only after reviewing its preregistered config."
+      }
+    },
+    {
+      "id": "search:synthetic-demo",
+      "type": "search",
+      "title": "Synthetic search record",
+      "summary": "Search provenance for the demo graph; no remote search is performed by this fixture.",
+      "tags": ["synthetic", "provenance"],
+      "data": {
+        "query": "intermittent cue gating context volatility",
+        "provider": "fixture",
+        "searched_at": "2026-09-21T00:00:00Z",
+        "status": "recorded",
+        "candidate_notes": ["paper:synthetic-source", "paper:synthetic-opposing"],
+        "rejection_notes": ["No real publication is asserted; URLs are example.invalid."]
+      }
+    }
+  ],
+  "edges": [
+    {"id": "edge:source-has-evidence", "source": "paper:synthetic-source", "target": "evidence:source-mechanism", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:opposing-has-evidence", "source": "paper:synthetic-opposing", "target": "evidence:opposing-finding", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:evidence-supports-claim", "source": "evidence:source-mechanism", "target": "claim:reported-gating", "relation": "supports", "status": "reported", "evidence_ids": ["evidence:source-mechanism"], "conditions": {}},
+    {"id": "edge:mechanism-derived", "source": "mechanism:cue-gating", "target": "claim:reported-gating", "relation": "derived_from", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:bridge-analogy", "source": "hypothesis:cross-domain-bridge", "target": "mechanism:cue-gating", "relation": "analogous_to", "status": "hypothesized", "evidence_ids": ["evidence:source-mechanism"], "conditions": {"target_domain": "toy switching task"}},
+    {"id": "edge:evidence-limits-bridge", "source": "evidence:opposing-finding", "target": "hypothesis:cross-domain-bridge", "relation": "limits", "status": "observed", "evidence_ids": ["evidence:opposing-finding"], "conditions": {"context": "volatile"}},
+    {"id": "edge:experiment-tests", "source": "experiment:bridge-test", "target": "hypothesis:cross-domain-bridge", "relation": "tests", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:decision-evidence", "source": "decision:retain-opposition", "target": "evidence:opposing-finding", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:search-source", "source": "search:synthetic-demo", "target": "paper:synthetic-source", "relation": "produces", "status": "structural", "evidence_ids": [], "conditions": {}},
+    {"id": "edge:search-opposing", "source": "search:synthetic-demo", "target": "paper:synthetic-opposing", "relation": "produces", "status": "structural", "evidence_ids": [], "conditions": {}}
+  ]
+}

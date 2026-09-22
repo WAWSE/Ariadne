@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "id": "paper:workflow-source",
+      "type": "paper",
+      "title": "Synthetic workflow source: stable cue context",
+      "summary": "Explicitly synthetic source card for an offline workflow demonstration.",
+      "tags": ["synthetic", "workflow"],
+      "data": {
+        "url": "https://example.invalid/srh/workflow-source",
+        "identifiers": {},
+        "read_scope": "abstract",
+        "applicability": {
+          "domain": "synthetic source cue task",
+          "task_context": "stable source context"
+        }
+      }
+    },
+    {
+      "id": "paper:workflow-counterexample",
+      "type": "paper",
+      "title": "Synthetic counterexample: volatility removes the effect",
+      "summary": "An explicitly synthetic opposing source retained as a separate card.",
+      "tags": ["synthetic", "counterevidence", "workflow"],
+      "data": {
+        "url": "https://example.invalid/srh/workflow-counterexample",
+        "identifiers": {},
+        "read_scope": "abstract",
+        "applicability": {
+          "domain": "synthetic source cue task",
+          "task_context": "volatile source context"
+        }
+      }
+    },
+    {
+      "id": "paper:workflow-target-context",
+      "type": "paper",
+      "title": "Synthetic target-task context card",
+      "summary": "A synthetic target-domain source card used only to label target context.",
+      "tags": ["synthetic", "target", "workflow"],
+      "data": {
+        "url": "https://example.invalid/srh/workflow-target-context",
+        "identifiers": {},
+        "read_scope": "abstract",
+        "applicability": {
+          "domain": "synthetic target cue task",
+          "task_context": "stable-or-volatile target context"
+        }
+      }
+    },
+    {
+      "id": "evidence:workflow-source",
+      "type": "evidence",
+      "title": "Synthetic stable-context observation",
+      "summary": "Observed synthetic abstract text; not a real scientific finding.",
+      "tags": ["synthetic", "observed"],
+      "data": {
+        "paper_id": "paper:workflow-source",
+        "locator": "Abstract, paragraph 1",
+        "excerpt": "In this synthetic fixture, an intermittent cue was associated with lower switching cost under stable context.",
+        "source_uri": "https://example.invalid/srh/workflow-source",
+        "verification": "fixture only; not independently verified",
+        "evidence_kind": "observation",
+        "assertion_role": "source_observation",
+        "applicability": {
+          "domain": "synthetic source cue task",
+          "task_context": "stable source context"
+        }
+      }
+    },
+    {
+      "id": "evidence:workflow-counterexample",
+      "type": "evidence",
+      "title": "Synthetic volatile-context observation",
+      "summary": "Synthetic negative evidence retained beside the source observation.",
+      "tags": ["synthetic", "counterevidence"],
+      "data": {
+        "paper_id": "paper:workflow-counterexample",
+        "locator": "Abstract, paragraph 2",
+        "excerpt": "In this synthetic fixture, the association disappeared when context volatility increased.",
+        "source_uri": "https://example.invalid/srh/workflow-counterexample",
+        "verification": "fixture only; not independently verified",
+        "evidence_kind": "observation",
+        "assertion_role": "source_observation",
+        "applicability": {
+          "domain": "synthetic source cue task",
+          "task_context": "volatile source context"
+        }
+      }
+    },
+    {
+      "id": "evidence:workflow-target-context",
+      "type": "evidence",
+      "title": "Synthetic target-context observation",
+      "summary": "A synthetic target-domain context observation; it is not support for the transfer.",
+      "tags": ["synthetic", "target-context"],
+      "data": {
+        "paper_id": "paper:workflow-target-context",
+        "locator": "Abstract, paragraph 1",
+        "excerpt": "In this synthetic target task, stable and volatile contexts are distinguishable.",
+        "source_uri": "https://example.invalid/srh/workflow-target-context",
+        "verification": "fixture only; not independently verified",
+        "evidence_kind": "observation",
+        "assertion_role": "target_observation",
+        "applicability": {
+          "domain": "synthetic target cue task",
+          "task_context": "stable-or-volatile target context"
+        }
+      }
+    },
+    {
+      "id": "claim:workflow-reported",
+      "type": "claim",
+      "title": "Reported synthetic stable-context association",
+      "summary": "An author-reported association, not a causal explanation.",
+      "tags": ["synthetic", "reported"],
+      "data": {
+        "origin": "author",
+        "status": "reported",
+        "evidence_ids": ["evidence:workflow-source"],
+        "evidence_roles": {
+          "evidence:workflow-source": "support"
+        },
+        "assertion_role": "source_assertion",
+        "applicability": {
+          "domain": "synthetic source cue task",
+          "task_context": "stable source context"
+        },
+        "conditions": ["stable context"],
+        "alternative_explanations": ["response preparation"]
+      }
+    },
+    {
+      "id": "hypothesis:workflow-transfer",
+      "type": "hypothesis",
+      "title": "Synthetic target transfer with a volatility boundary",
+      "summary": "A proposal that keeps both source and negative evidence visible.",
+      "tags": ["synthetic", "proposed", "workflow"],
+      "data": {
+        "prediction": "Under stable target context, intermittent cues reduce switching cost; the effect may disappear under volatile context.",
+        "alternatives": ["The cue changes preparation rather than gating."],
+        "test": "Compare intermittent and matched continuous cues in stable and volatile target contexts.",
+        "status": "proposed",
+        "evidence_ids": ["evidence:workflow-source", "evidence:workflow-counterexample", "evidence:workflow-target-context"],
+        "evidence_roles": {
+          "evidence:workflow-source": "analogy",
+          "evidence:workflow-counterexample": "counterevidence",
+          "evidence:workflow-target-context": "context"
+        },
+        "assertion_role": "transfer_proposal",
+        "applicability": {
+          "source_domain": "synthetic source cue task",
+          "target_domain": "synthetic target cue task",
+          "task_context": "stable-or-volatile target context"
+        },
+        "transfer_assumptions": [
+          "The target switching-cost measurement is comparable to the source measurement.",
+          "Volatile target context may remove the proposed effect."
+        ]
+      }
+    },
+    {
+      "id": "experiment:workflow-cheap-test",
+      "type": "experiment",
+      "title": "Planned synthetic stable-versus-volatile comparison",
+      "summary": "A cheap discriminating test; no execution is implied.",
+      "tags": ["synthetic", "planned"],
+      "data": {
+        "hypothesis_id": "hypothesis:workflow-transfer",
+        "status": "planned",
+        "command": "python synthetic_test.py --seed 11",
+        "budget": "One local synthetic run; 10 minutes CPU.",
+        "config": {"context": ["stable", "volatile"], "cue": ["intermittent", "continuous"]},
+        "seed": 11,
+        "code_ref": "synthetic_test.py",
+        "data_ref": "generated synthetic observations",
+        "metrics": ["switching_cost", "validity_check"],
+        "artifacts": [],
+        "outcome": null,
+        "applicability": {
+          "target_domain": "synthetic target cue task",
+          "task_context": "stable-or-volatile target context"
+        },
+        "route_changes": {
+          "support": "Continue the target route and examine preparation as a residual limitation.",
+          "contradict": "Park the transfer and compare the preparation alternative.",
+          "inconclusive": "Improve precision before choosing a route.",
+          "invalid": "Repair the validity check before using the result."
+        }
+      }
+    },
+    {
+      "id": "decision:workflow-boundary-first",
+      "type": "decision",
+      "title": "Test the volatility boundary first",
+      "summary": "The retained negative evidence changes the next test rather than proving the transfer.",
+      "tags": ["synthetic", "decision"],
+      "data": {
+        "reason": "The source association and counterexample differ by context volatility.",
+        "evidence_ids": ["evidence:workflow-source", "evidence:workflow-counterexample", "evidence:workflow-target-context"],
+        "evidence_roles": {
+          "evidence:workflow-source": "analogy",
+          "evidence:workflow-counterexample": "counterevidence",
+          "evidence:workflow-target-context": "context"
+        },
+        "next_action": "Compare stable and volatile contexts before broadening the transfer proposal.",
+        "applicability": {
+          "target_domain": "synthetic target cue task",
+          "task_context": "stable-or-volatile target context"
+        },
+        "current_route": "Test the volatility boundary before broadening the transfer.",
+        "parked_alternative": "Preparation explanation remains parked, not rejected.",
+        "reopen_trigger": "Reopen preparation if the stable-versus-volatile comparison contradicts the predicted interaction."
+      }
+    }
+  ],
+  "edges": [
+    {"id": "edge:workflow-source-evidence", "source": "paper:workflow-source", "target": "evidence:workflow-source", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}, "applicability": {"domain": "synthetic source cue task", "task_context": "stable source context"}},
+    {"id": "edge:workflow-counterexample-evidence", "source": "paper:workflow-counterexample", "target": "evidence:workflow-counterexample", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}, "applicability": {"domain": "synthetic source cue task", "task_context": "volatile source context"}},
+    {"id": "edge:workflow-target-context-evidence", "source": "paper:workflow-target-context", "target": "evidence:workflow-target-context", "relation": "has_evidence", "status": "structural", "evidence_ids": [], "conditions": {}, "applicability": {"domain": "synthetic target cue task", "task_context": "stable-or-volatile target context"}},
+    {"id": "edge:workflow-source-claim", "source": "evidence:workflow-source", "target": "claim:workflow-reported", "relation": "supports", "status": "reported", "evidence_ids": ["evidence:workflow-source"], "evidence_roles": {"evidence:workflow-source": "support"}, "assertion_role": "source_assertion", "applicability": {"domain": "synthetic source cue task", "task_context": "stable source context"}, "conditions": {"context": "stable"}},
+    {"id": "edge:workflow-counterexample-limits-source", "source": "evidence:workflow-counterexample", "target": "claim:workflow-reported", "relation": "limits", "status": "observed", "evidence_ids": ["evidence:workflow-counterexample"], "evidence_roles": {"evidence:workflow-counterexample": "counterevidence"}, "assertion_role": "limitation", "applicability": {"domain": "synthetic source cue task", "task_context": "volatile source context"}, "conditions": {"context": "volatile"}},
+    {"id": "edge:workflow-analogy", "source": "hypothesis:workflow-transfer", "target": "claim:workflow-reported", "relation": "analogous_to", "status": "hypothesized", "evidence_ids": ["evidence:workflow-source"], "evidence_roles": {"evidence:workflow-source": "analogy"}, "assertion_role": "analogy", "applicability": {"source_domain": "synthetic source cue task", "target_domain": "synthetic target cue task", "task_context": "stable-or-volatile target context"}, "conditions": {"assumption": "target measurement is comparable", "failure_condition": "volatile target context may remove the effect"}},
+    {"id": "edge:workflow-test", "source": "experiment:workflow-cheap-test", "target": "hypothesis:workflow-transfer", "relation": "tests", "status": "structural", "evidence_ids": [], "conditions": {"positive": "predicted stable-context benefit", "negative": "no predicted benefit", "invalid": "failed validity check"}, "applicability": {"target_domain": "synthetic target cue task", "task_context": "stable-or-volatile target context"}}
+  ]
+}
