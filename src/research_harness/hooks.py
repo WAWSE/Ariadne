@@ -21,7 +21,10 @@ def session_start(root: Path, max_chars: int = HOOK_CONTEXT_LIMIT) -> dict[str, 
     try:
         # Context is lexical/offline and bounded; hooks never load an embedding
         # model, execute research, or synthesize an unwritten chat delta.
-        context = context_for_project(root, max_chars=min(max_chars, HOOK_CONTEXT_LIMIT), intent="resume", include_quality=False)
+        context = context_for_project(
+            root, max_chars=min(max_chars, HOOK_CONTEXT_LIMIT), intent="resume",
+            include_details=True, include_quality=False,
+        )
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}
     except Exception as exc:
         # A hook must always return valid JSON and never prevent a host session.
@@ -37,7 +40,10 @@ def _snapshot(root: Path) -> None:
     _reject_symlink_escape(root, Path(".research/exports/latest-hook-snapshot.json"))
     _reject_symlink_escape(root, Path(".research/exports/latest-hook-snapshot.md"))
     with ResearchStore(root) as store:
-        context = build_context(store, max_chars=HOOK_CONTEXT_LIMIT, intent="resume", include_quality=False)
+        context = build_context(
+            store, max_chars=HOOK_CONTEXT_LIMIT, intent="resume",
+            include_details=True, include_quality=False,
+        )
         stats = store.stats()
     snapshot = {
         "snapshot_type": "bounded_hook_snapshot_v1",

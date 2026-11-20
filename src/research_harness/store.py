@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,9 @@ from typing import Any
 
 from .embeddings import DEFAULT_DIMENSION, DEFAULT_MODEL, DEFAULT_PROVIDER, EmbeddingError, make_embedder, record_text
 from .models import (
-    SCHEMA_VERSION, canonical_json, content_hash, dependency_content_hash,
+    ASSERTION_ROLES, EDGE_RELATIONS, EDGE_STATUSES, EVIDENCE_KINDS, EVIDENCE_ROLES,
+    RECORD_TYPES, SCHEMA_VERSION, STRUCTURAL_RELATIONS,
+    canonical_json, content_hash, dependency_content_hash,
     edge_dependency_refs, normalize_bundle, normalize_bundle_state,
     record_dependency_refs, record_navigation_refs,
 )
@@ -134,7 +137,10 @@ class ResearchStore:
         data, typ = record["data"], record["type"]
         refs: list[tuple[Any, str]] = []
         if typ == "evidence":
-            refs.append((data.get("paper_id") or data.get("experiment_id"), "paper" if data.get("paper_id") else "experiment"))
+            refs.append((
+                data.get("source_id") or data.get("paper_id") or data.get("experiment_id"),
+                "source" if data.get("source_id") else "paper" if data.get("paper_id") else "experiment",
+            ))
         elif typ == "experiment":
             refs.append((data.get("hypothesis_id"), "hypothesis"))
         elif typ == "result":
@@ -173,7 +179,11 @@ class ResearchStore:
             if source_type is None or target_type is None:
                 raise ValueError(f"edge {edge['id']!r} references an unknown endpoint")
             if not relation_is_compatible(edge["relation"], source_type, target_type):
-                raise ValueError(f"edge {edge['id']!r} relation {edge['relation']!r} is incompatible with {source_type}->{target_type}")
+                targets = sorted(typ for typ in RECORD_TYPES if relation_is_compatible(edge["relation"], source_type, typ))
+                raise ValueError(
+                    f"edge {edge['id']!r} relation {edge['relation']!r} is incompatible with {source_type}->{target_type}; "
+                    f"allowed target types for {source_type}: {', '.join(targets) or 'none'}"
+                )
             for evidence_id in edge["evidence_ids"]:
                 if types.get(evidence_id) != "evidence":
                     raise ValueError(f"edge {edge['id']!r} evidence ref {evidence_id!r} is not an evidence record")
@@ -182,7 +192,7 @@ class ResearchStore:
                 for evidence_id in roles:
                     if evidence_id not in edge["evidence_ids"]:
                         raise ValueError(f"edge {edge['id']!r} evidence_roles key {evidence_id!r} must be a listed evidence record")
-            if edge["status"] in {"reported", "observed"} and edge["relation"] not in {"cites", "has_evidence", "tests", "produces", "derived_from"} and not edge["evidence_ids"]:
+            if edge["status"] in {"reported", "observed"} and edge["relation"] not in STRUCTURAL_RELATIONS and not edge["evidence_ids"]:
                 raise ValueError(f"reported/observed edge {edge['id']!r} requires evidence_ids")
             basis = edge.get("basis")
             if isinstance(basis, dict):
@@ -221,12 +231,27 @@ class ResearchStore:
         return {"inserted_records": 0, "updated_records": 0, "unchanged_records": 0,
                 "inserted_edges": 0, "updated_edges": 0, "unchanged_edges": 0, "state_updated": 0}
 
-    def _write_entities(self, records: list[dict], edges: list[dict], counts: dict[str, int], now: str) -> None:
+    def _write_entities(self, records: list[dict], edges: list[dict], counts: dict[str, int], now: str,
+                        *, receipt_limit: int = 0) -> dict | None:
+        # Build the receipt on the actual write path, without an extra graph
+        # read or any scientific text. It is returned only after the caller's
+        # transaction succeeds (or explicitly labelled as a rolled-back preview).
+        receipt = ({"records": [], "edges": [], "record_count": len(records), "edge_count": len(edges),
+                    "truncated": len(records) > receipt_limit or len(edges) > receipt_limit}
+                   if receipt_limit else None)
+
+        def capture(kind: str, item: dict, operation: str) -> None:
+            if receipt is None or len(receipt[kind]) >= receipt_limit:
+                return
+            fields = ("id", "type") if kind == "records" else ("id", "source", "relation", "target", "status")
+            receipt[kind].append({**{field: item[field] for field in fields}, "operation": operation})
+
         for record in records:
             record_id, digest = record["id"], content_hash(record)
             old = self.conn.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
             if old and old["content_hash"] == digest:
                 counts["unchanged_records"] += 1
+                capture("records", record, "unchanged")
                 continue
             revision = int(old["revision"]) + 1 if old else 1
             self.conn.execute("INSERT OR REPLACE INTO records(id,type,title,summary,tags_json,data_json,payload_json,content_hash,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -239,11 +264,13 @@ class ResearchStore:
             event = "record.inserted" if old is None else "record.updated"
             self.conn.execute("INSERT INTO events(event_type,entity_id,payload_json,created_at) VALUES(?,?,?,?)", (event, record_id, canonical_json({"record": record, "previous": json.loads(old["payload_json"]) if old else None, "revision": revision}), now))
             counts["inserted_records" if old is None else "updated_records"] += 1
+            capture("records", record, "inserted" if old is None else "updated")
         for edge in edges:
             edge_id, digest = edge["id"], content_hash(edge)
             old = self.conn.execute("SELECT * FROM edges WHERE id=?", (edge_id,)).fetchone()
             if old and old["content_hash"] == digest:
                 counts["unchanged_edges"] += 1
+                capture("edges", edge, "unchanged")
                 continue
             revision = int(old["revision"]) + 1 if old else 1
             self.conn.execute("INSERT OR REPLACE INTO edges(id,source,target,relation,status,evidence_json,conditions_json,payload_json,content_hash,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -251,6 +278,8 @@ class ResearchStore:
             event = "edge.inserted" if old is None else "edge.updated"
             self.conn.execute("INSERT INTO events(event_type,entity_id,payload_json,created_at) VALUES(?,?,?,?)", (event, edge_id, canonical_json({"edge": edge, "previous": json.loads(old["payload_json"]) if old else None, "revision": revision}), now))
             counts["inserted_edges" if old is None else "updated_edges"] += 1
+            capture("edges", edge, "inserted" if old is None else "updated")
+        return receipt
 
     def _preserve_ingest_maintenance(self, records: list[dict], edges: list[dict]) -> None:
         """Do not erase durable review history on a plain replay/update.
@@ -326,8 +355,151 @@ class ResearchStore:
                 raise ValueError(f"reviewed entity {raw!r} is unknown")
         return reviewed_records, reviewed_edges
 
+    @staticmethod
+    def _remember_check_contract() -> dict[str, Any]:
+        """Return the compact, schema-owned contract shown by ``remember --check``.
+
+        This deliberately tells a caller how to submit an authored delta, but
+        never tries to infer an anchor, role, or scientific interpretation.
+        Keeping the enum values beside the validator avoids a second, stale
+        command-specific schema.
+        """
+
+        return {
+            "submit": "srh remember FILE",
+            "evidence_anchor": (
+                "Every evidence record needs exactly one nonempty source_id, "
+                "paper_id, or experiment_id resolving to a source, paper, or "
+                "experiment record stored already or included in this delta."
+            ),
+            "evidence_role_target": (
+                "A record's evidence_roles[id] is relative to that record's proposition or decision, "
+                "not whether the evidence is bad news for a previous route. On supports/contradicts/limits "
+                "edges it is relative to the named target assertion. A new decision may use the same "
+                "evidence as support while revising an old decision via new --revises/structural--> old; "
+                "describe changed and retained scope in conditions. Validation checks shape/references, "
+                "not scientific correctness."
+            ),
+            "enums": {
+                "assertion_role": sorted(ASSERTION_ROLES),
+                "evidence_kind": sorted(EVIDENCE_KINDS),
+                "evidence_roles": sorted(EVIDENCE_ROLES),
+                "edge_status": sorted(EDGE_STATUSES),
+                "edge_relation": sorted(EDGE_RELATIONS),
+            },
+        }
+
+    @staticmethod
+    def _remember_check_path(message: str) -> str | None:
+        """Return a conservative validation path only when its syntax is clear."""
+
+        match = re.match(
+            r"^(?P<path>(?:bundle|delta|state)(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*|expected_state_hash)\s*:",
+            message,
+        )
+        if match:
+            return match.group("path")
+        # Normalizers include a concrete record ID in this form.  Restrict the
+        # capture to unambiguous conventional IDs rather than returning an
+        # arbitrary user-controlled string as a structured path.
+        match = re.match(
+            r"^(?P<path>record\['[A-Za-z0-9:_-]+'\]\.data(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*:",
+            message,
+        )
+        return match.group("path") if match else None
+
+    @staticmethod
+    def _remember_check_category(message: str) -> str:
+        """Map validator text to a small stable category without parsing science."""
+
+        lowered = message.lower()
+        if "delta_id" in lowered and ("already used" in lowered or "replay" in lowered):
+            return "replay"
+        if "expected_state_hash" in lowered or lowered.startswith("state"):
+            return "state"
+        if "template placeholder" in lowered:
+            return "template"
+        if any(token in lowered for token in ("reference", "unknown endpoint", "evidence ref", "must resolve")):
+            return "reference"
+        if any(token in lowered for token in ("assertion_role", "evidence_kind", "evidence_roles")):
+            return "semantic"
+        if "schema_version" in lowered:
+            return "schema"
+        return "validation"
+
+    def _available_evidence_anchors(self, limit: int = 12) -> list[dict[str, str]]:
+        """Return a bounded, typed anchor inventory only for reference repair."""
+
+        rows = self.conn.execute(
+            "SELECT id,type FROM records WHERE type IN ('source','paper','experiment') ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        field_for_type = {"source": "source_id", "paper": "paper_id", "experiment": "experiment_id"}
+        return [
+            {"id": row["id"], "type": row["type"], "field": field_for_type[row["type"]]}
+            for row in rows
+        ]
+
+    def check_delta(self, delta: dict) -> dict[str, Any]:
+        """Validate a ``remember`` delta in the live store and roll back every write.
+
+        The check deliberately exercises the same transaction as ``apply_delta``
+        (including delta-id replay and state compare-and-swap).  It is a typing
+        aid for authored research memory, not an auto-repair or a weaker import
+        path.  Ordinary validation errors are data so a Codex session can fix a
+        compact delta without losing its whole trajectory.
+        """
+
+        try:
+            would_apply = self._apply_delta(delta, dry_run=True)
+        except ValueError as exc:
+            message = str(exc)
+            category = self._remember_check_category(message)
+            error: dict[str, str] = {"category": category, "message": message}
+            path = self._remember_check_path(message)
+            if path is not None:
+                error["path"] = path
+            result: dict[str, Any] = {
+                "valid": False,
+                "error": error,
+                "guidance": self._remember_check_contract(),
+            }
+            if category == "reference":
+                anchors = self._available_evidence_anchors()
+                if anchors:
+                    result["available_anchors"] = anchors
+                result["next_step"] = (
+                    "Use a compatible stored anchor or include its matching source, paper, or experiment record in the same delta."
+                )
+            elif category == "state":
+                result["next_step"] = "Refresh the current state hash before submitting a delta that uses expected_state_hash."
+            elif category == "template":
+                result["next_step"] = (
+                    "Replace every __SRH_TEMPLATE_*__ placeholder with inspected source material, then run this check again."
+                )
+            else:
+                result["next_step"] = "Correct the authored delta, run this check again, then submit it with srh remember FILE."
+            return result
+        return {
+            "valid": True,
+            "would_apply": would_apply,
+            "guidance": self._remember_check_contract(),
+        }
+
     def apply_delta(self, delta: dict) -> dict:
         """Atomically apply a Codex semantic delta and explicit review receipts."""
+
+        return self._apply_delta(delta, dry_run=False)
+
+    def _apply_delta(self, delta: dict, *, dry_run: bool) -> dict:
+        """Run the one strict delta path, committing only when requested.
+
+        ``dry_run`` intentionally reaches the ordinary write calls before a
+        database rollback.  This makes preflight cover the exact replay,
+        optimistic-concurrency, reference, receipt, semantic, and state path
+        used by a real ``remember`` while leaving no durable record, edge,
+        event, state, or retry receipt behind.
+        """
         if not isinstance(delta, dict):
             raise ValueError("delta must be an object")
         if delta.get("schema_version") != SCHEMA_VERSION:
@@ -338,6 +510,13 @@ class ResearchStore:
         if not isinstance(patch, dict):
             raise ValueError("delta.state_patch must be an object")
         expected = delta.get("expected_state_hash")
+        record_guards = delta.get("expected_record_hashes", {})
+        if not isinstance(record_guards, dict) or any(
+            not isinstance(key, str) or not key or (value is not None and (
+                not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+            )) for key, value in record_guards.items()
+        ):
+            raise ValueError("delta.expected_record_hashes must map record IDs to SHA-256 strings or null (absent)")
         if expected is not None and (not isinstance(expected, str) or len(expected) != 64):
             raise ValueError("delta.expected_state_hash must be a SHA-256 hash string")
         reviewed_ids = delta.get("reviewed_ids", [])
@@ -372,10 +551,20 @@ class ResearchStore:
                     result = prior_payload.get("result")
                     if not isinstance(result, dict):
                         raise ValueError(f"delta_id {delta_id!r} has an invalid replay event")
-                    self.conn.commit()
+                    if dry_run:
+                        self.conn.rollback()
+                    else:
+                        self.conn.commit()
                     replayed = _copy(result)
                     replayed["replayed"] = True
+                    if dry_run and isinstance(replayed.get("writeback"), dict):
+                        replayed["writeback"]["status"] = "preview"
                     return replayed
+            for record_id, expected_hash in record_guards.items():
+                row = self.conn.execute("SELECT payload_json FROM records WHERE id=?", (record_id,)).fetchone()
+                actual_hash = content_hash(json.loads(row[0])) if row is not None else None
+                if actual_hash != expected_hash:
+                    raise ValueError(f"expected_record_hashes: record {record_id!r} changed; refresh before writing")
             current_state = self._current_state()
             if expected is not None and expected != content_hash(current_state):
                 raise ValueError("expected_state_hash does not match the current state")
@@ -428,7 +617,9 @@ class ResearchStore:
                     edge["basis"] = {ref: dependency_content_hash(final_records[ref]) for ref in edge_dependency_refs(edge) if ref in final_records}
             types = self._validate_refs(list(incoming_records.values()), list(incoming_edges.values()), strict_new_assertions=True)
             next_state = self._validate_state({**current_state, **patch}, types)
-            self._write_entities(list(incoming_records.values()), list(incoming_edges.values()), counts, now)
+            receipt = self._write_entities(list(incoming_records.values()), list(incoming_edges.values()), counts, now,
+                                           receipt_limit=64)
+            counts["writeback"] = {"status": "preview" if dry_run else "committed", **receipt}
             if next_state != current_state:
                 self.conn.execute("UPDATE state SET value_json=? WHERE id=1", (canonical_json(next_state),))
                 self.conn.execute("INSERT INTO events(event_type,entity_id,payload_json,created_at) VALUES(?,?,?,?)", ("state.updated", "state", canonical_json({"patch": patch, "state": next_state}), now))
@@ -443,7 +634,10 @@ class ResearchStore:
                     "INSERT INTO events(event_type,entity_id,payload_json,created_at) VALUES(?,?,?,?)",
                     ("delta.applied", delta_id, canonical_json({"input_hash": request_hash, "result": counts}), now),
                 )
-            self.conn.commit()
+            if dry_run:
+                self.conn.rollback()
+            else:
+                self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
@@ -463,6 +657,21 @@ class ResearchStore:
 
     def get_state(self) -> dict:
         return self._current_state()
+
+    def decision_revisions(self, decision_id: str, limit: int = 2) -> dict:
+        """Read bounded outgoing revision links without loading the graph.
+
+        Authored lineage is not a truth judgment or a choice of current route.
+        The payload is bounded; on older databases the SQL may scan edges.
+        Reading never migrates schemas or creates an index.
+        """
+        if type(limit) is not int or limit <= 0 or limit > 12:
+            raise ValueError("limit must be an integer from 1 to 12")
+        rows = self.conn.execute(
+            "SELECT payload_json FROM edges WHERE source=? AND relation='revises' ORDER BY id LIMIT ?",
+            (decision_id, limit + 1),
+        ).fetchall()
+        return {"edges": [json.loads(row[0]) for row in rows[:limit]], "truncated": len(rows) > limit}
 
     def state_hash(self) -> str:
         return content_hash(self._current_state())
@@ -492,9 +701,9 @@ class ResearchStore:
         data, typ = record.get("data", {}), record.get("type")
         refs: list[tuple[str, str]] = []
         if typ == "evidence":
-            ref = data.get("paper_id") or data.get("experiment_id")
+            ref = data.get("source_id") or data.get("paper_id") or data.get("experiment_id")
             if isinstance(ref, str) and ref:
-                refs.append((ref, "paper_id" if data.get("paper_id") else "experiment_id"))
+                refs.append((ref, "source_id" if data.get("source_id") else "paper_id" if data.get("paper_id") else "experiment_id"))
         elif typ == "experiment" and isinstance(data.get("hypothesis_id"), str):
             refs.append((data["hypothesis_id"], "hypothesis_id"))
         elif typ == "result" and isinstance(data.get("experiment_id"), str):
@@ -507,6 +716,7 @@ class ResearchStore:
     def graph(self, seed: str | None = None, hops: int = 1, limit: int = 80) -> dict:
         if not isinstance(hops, int) or hops < 0 or not isinstance(limit, int) or limit <= 0:
             raise ValueError("hops must be >= 0 and limit must be positive")
+        backing_truncated, stopped_for_limit = False, False
         if seed is None:
             rows = self.conn.execute("SELECT payload_json FROM records ORDER BY id LIMIT ?", (limit + 1,)).fetchall()
             records = {item["id"]: item for item in (json.loads(row[0]) for row in rows[:limit])}
@@ -524,14 +734,19 @@ class ResearchStore:
             records = {item["id"]: item for item in scoped_records}
             edges = {item["id"]: item for item in scoped_edges}
             if seed not in records:
-                return {"records": [], "edges": [], "provenance": [], "truncated": False}
+                return {"records": [], "edges": [], "provenance": [], "truncated": False,
+                        "boundary": {"hops": hops, "more_connections": "unknown",
+                                     "continuation_ids": [], "continuation_ids_truncated": False}}
             selected, frontier, truncated = {seed}, {seed}, backing_truncated
             reverse: dict[str, set[str]] = {}
             for record_id, record in records.items():
                 for ref in record_navigation_refs(record):
                     reverse.setdefault(ref, set()).add(record_id)
             for _ in range(hops):
-                if not frontier or len(selected) >= limit:
+                if not frontier:
+                    break
+                if len(selected) >= limit:
+                    stopped_for_limit = True
                     break
                 nearby: set[str] = set()
                 for record_id in frontier:
@@ -542,16 +757,49 @@ class ResearchStore:
                             nearby.add(edge["target"]); nearby.update(edge.get("evidence_ids", []))
                         elif edge["target"] == record_id:
                             nearby.add(edge["source"]); nearby.update(edge.get("evidence_ids", []))
+                        # Usage roles can live on an assertion edge rather
+                        # than either endpoint's data.evidence_ids. A saved
+                        # evidence item must navigate back to that actual owner.
+                        elif record_id in edge.get("evidence_ids", []):
+                            nearby.update((edge["source"], edge["target"]))
+                            nearby.update(edge.get("evidence_ids", []))
                 nearby = {item for item in nearby if item in records and item not in selected}
                 room, ordered = limit - len(selected), sorted(nearby)
                 if len(ordered) > room:
                     truncated = True
                 frontier = set(ordered[:room])
                 selected.update(frontier)
+        # A requested hop radius is not an exhaustive literature/route search.
+        # Reuse the bounded loaded component; do not scan more records, infer
+        # an unseen conflict, or auto-expand the caller's selected neighborhood.
+        continuation_ids: set[str] = set()
+        if seed is not None:
+            for record_id, record in records.items():
+                refs = set(record_navigation_refs(record))
+                if record_id in selected:
+                    if any(ref in records and ref not in selected for ref in refs):
+                        continuation_ids.add(record_id)
+                else:
+                    continuation_ids.update(refs & selected)
+            for edge in edges.values():
+                connected = {edge["source"], edge["target"], *edge.get("evidence_ids", [])}
+                if any(ref in records and ref not in selected for ref in connected):
+                    continuation_ids.update(connected & selected)
+        ordered_continuations = sorted(continuation_ids)
+        if stopped_for_limit and continuation_ids:
+            truncated = True
+        boundary = {
+            "hops": hops if seed is not None else None,
+            "more_connections": ("known" if continuation_ids else "unknown"
+                                 if backing_truncated or seed is None else "none_in_loaded_graph"),
+            "continuation_ids": ordered_continuations[:8],
+            "continuation_ids_truncated": len(ordered_continuations) > 8,
+        }
         explicit_edges = [edge for _edge_id, edge in sorted(edges.items()) if edge["source"] in selected and edge["target"] in selected]
         provenance = [{"source": record_id, "target": ref, "field": field, "kind": "record_ref"}
                       for record_id in sorted(selected) for ref, field in self._provenance_fields(records[record_id]) if ref in selected]
-        return {"records": [records[item] for item in sorted(selected)], "edges": explicit_edges, "provenance": provenance, "truncated": bool(truncated)}
+        return {"records": [records[item] for item in sorted(selected)], "edges": explicit_edges,
+                "provenance": provenance, "truncated": bool(truncated), "boundary": boundary}
 
     def _lexical(self, query: str, limit: int, record_type: str | None) -> list[tuple[str, float]]:
         terms = [item for item in query.replace('"', " ").split() if item]
@@ -772,10 +1020,10 @@ class ResearchStore:
                 continue
             record_rows = self.conn.execute(
                 "SELECT id,payload_json FROM records WHERE "
-                "json_extract(data_json,'$.paper_id')=? OR json_extract(data_json,'$.experiment_id')=? "
+                "json_extract(data_json,'$.source_id')=? OR json_extract(data_json,'$.paper_id')=? OR json_extract(data_json,'$.experiment_id')=? "
                 "OR json_extract(data_json,'$.hypothesis_id')=? OR EXISTS "
                 "(SELECT 1 FROM json_each(data_json,'$.evidence_ids') WHERE value=?) ORDER BY id LIMIT ?",
-                (entity_id, entity_id, entity_id, entity_id, remaining + 1),
+                (entity_id, entity_id, entity_id, entity_id, entity_id, remaining + 1),
             ).fetchall()
             if len(record_rows) > remaining:
                 truncated = True

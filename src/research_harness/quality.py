@@ -12,10 +12,16 @@ from typing import Any
 
 from .models import (
     EDGE_RELATIONS,
-    canonical_json,
     dependency_content_hash,
     edge_dependency_refs,
     record_dependency_refs,
+)
+from .semantics import (
+    compare_recorded_applicability,
+    applicability_domain as _target_domain,
+    assertion_required_evidence_kinds,
+    assertion_required_evidence_roles,
+    is_qualified_assertion_evidence,
 )
 
 
@@ -49,7 +55,7 @@ def _relation_is_compatible(relation: str, source_type: str | None, target_type:
     """The same conservative relation matrix used by ingest validation."""
 
     all_types = {
-        "paper", "problem", "method", "technique", "mechanism", "claim",
+        "paper", "source", "problem", "method", "technique", "mechanism", "claim",
         "evidence", "hypothesis", "experiment", "result", "limitation",
         "decision", "search",
     }
@@ -66,6 +72,9 @@ def _relation_is_compatible(relation: str, source_type: str | None, target_type:
         "analogous_to": (all_types - {"search"}, all_types - {"search"}),
         "derived_from": ({"mechanism", "method", "technique", "claim", "hypothesis", "result"}, {"paper", "claim", "evidence", "mechanism", "method", "technique", "result"}),
         "has_evidence": (all_types - {"evidence", "search"}, {"evidence"}),
+        # Authored decision lineage, not scientific contradiction or automatic
+        # supersession. Conditions retain what changed and what remains valid.
+        "revises": ({"decision"}, {"decision"}),
     }
     if relation == "produces":
         return (source_type == "search" and target_type in {"paper", "evidence"}) or (
@@ -81,69 +90,6 @@ def relation_is_compatible(relation: str, source_type: str | None, target_type: 
     return relation in EDGE_RELATIONS and _relation_is_compatible(relation, source_type, target_type)
 
 
-def _applicability(item: dict[str, Any]) -> dict[str, Any]:
-    """Return an authored applicability object; never infer one from IDs."""
-
-    if not isinstance(item, dict):
-        return {}
-    data = item.get("data", item)
-    if not isinstance(data, dict):
-        return {}
-    value = data.get("applicability")
-    return value if isinstance(value, dict) else {}
-
-
-def _target_domain(item: dict[str, Any]) -> str | None:
-    data = item.get("data", item) if isinstance(item, dict) else {}
-    value = _applicability(item).get("target_domain") or _applicability(item).get("domain")
-    if value is None and isinstance(data, dict):
-        value = data.get("target_domain")
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def _task_context(item: dict[str, Any]) -> str | None:
-    value = _applicability(item).get("task_context")
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def _applicability_compatibility(evidence: dict[str, Any], target: dict[str, Any]) -> str:
-    """Return match/mismatch/unknown using only explicit authored fields."""
-
-    target_domain, evidence_domain = _target_domain(target), _target_domain(evidence)
-    if target_domain is None or evidence_domain is None:
-        return "unknown"
-    if target_domain != evidence_domain:
-        return "mismatch"
-    target_context, evidence_context = _task_context(target), _task_context(evidence)
-    if target_context is not None and evidence_context is not None and target_context != evidence_context:
-        return "mismatch"
-    target_conditions = _applicability(target).get("conditions")
-    evidence_conditions = _applicability(evidence).get("conditions")
-    if not isinstance(target_conditions, dict) or not isinstance(evidence_conditions, dict):
-        return "unknown"
-    shared = set(target_conditions) & set(evidence_conditions)
-    if any(target_conditions[key] != evidence_conditions[key] for key in shared):
-        return "mismatch"
-    if set(target_conditions) != set(evidence_conditions):
-        return "unknown"
-    # Canonical equality keeps nested applicability values deterministic.
-    return "match" if canonical_json(target_conditions) == canonical_json(evidence_conditions) else "mismatch"
-
-
-def _evidence_is_direct_target_observation(evidence: dict[str, Any], target: dict[str, Any]) -> bool:
-    """True only for an explicitly labelled target-domain observation."""
-
-    if evidence.get("type") != "evidence":
-        return False
-    data = evidence.get("data", {})
-    return (
-        isinstance(data, dict)
-        and data.get("assertion_role") == "target_observation"
-        and data.get("evidence_kind") == "observation"
-        and _applicability_compatibility(evidence, target) == "match"
-    )
-
-
 def _record_provenance_fields(record: dict[str, Any]) -> list[tuple[str, str]]:
     data = record.get("data", {})
     if not isinstance(data, dict):
@@ -151,9 +97,9 @@ def _record_provenance_fields(record: dict[str, Any]) -> list[tuple[str, str]]:
     refs: list[tuple[str, str]] = []
     typ = record.get("type")
     if typ == "evidence":
-        ref = data.get("paper_id") or data.get("experiment_id")
+        ref = data.get("source_id") or data.get("paper_id") or data.get("experiment_id")
         if isinstance(ref, str) and ref:
-            refs.append((ref, "paper_id" if data.get("paper_id") else "experiment_id"))
+            refs.append((ref, "source_id" if data.get("source_id") else "paper_id" if data.get("paper_id") else "experiment_id"))
     elif typ == "experiment" and isinstance(data.get("hypothesis_id"), str):
         refs.append((data["hypothesis_id"], "hypothesis_id"))
     elif typ == "result" and isinstance(data.get("experiment_id"), str):
@@ -172,7 +118,10 @@ def _typed_record_refs(record: dict[str, Any]) -> list[tuple[Any, str]]:
         return []
     refs: list[tuple[Any, str]] = []
     if record.get("type") == "evidence":
-        refs.append((data.get("paper_id") or data.get("experiment_id"), "paper" if data.get("paper_id") else "experiment"))
+        refs.append((
+            data.get("source_id") or data.get("paper_id") or data.get("experiment_id"),
+            "source" if data.get("source_id") else "paper" if data.get("paper_id") else "experiment",
+        ))
     elif record.get("type") == "experiment":
         refs.append((data.get("hypothesis_id"), "hypothesis"))
     elif record.get("type") == "result":
@@ -328,13 +277,27 @@ def assess_quality(
             elif scope in {"metadata", "abstract"}:
                 add("limited_read_scope", "info", [item_id], f"Paper read_scope is {scope!r}; it is limited source coverage, not full-text verification.")
         elif typ == "evidence":
+            # A map writer must make the evidence qualification explicit.  A
+            # legacy record may still be readable, but an omitted/unknown
+            # kind or scope is never allowed to qualify an assertion.
+            evidence_kind_value = data.get("evidence_kind")
+            if not isinstance(evidence_kind_value, str) or not evidence_kind_value.strip():
+                add("missing_evidence_kind", "warning", [item_id], "Evidence has no explicit evidence_kind; treat its role as unknown.")
+            elif evidence_kind_value.strip().casefold() == "unknown":
+                add("unknown_evidence_kind", "info", [item_id], "Evidence kind is explicitly unknown; it cannot qualify an established assertion.")
+            applicability_value = data.get("applicability")
+            if not isinstance(applicability_value, dict):
+                add("missing_applicability", "warning", [item_id], "Evidence has no explicit applicability object; domain and conditions remain unknown.")
+            else:
+                if _target_domain(item) is None:
+                    add("unknown_applicability", "info", [item_id], "Evidence applicability is unknown; it cannot qualify a target assertion.")
             locator = data.get("locator")
             if not isinstance(locator, str) or not locator.strip():
                 add("missing_locator", "warning", [item_id], "Evidence has no usable source locator.")
             elif locator.strip().casefold() in {"paper", "source", "abstract", "fulltext", "full text"}:
                 add("weak_locator", "info", [item_id], "Evidence locator is broad; retain a section, page, figure, or paragraph when available.")
             if not isinstance(data.get("source_uri"), str) or not data.get("source_uri", "").strip():
-                add("missing_source_uri", "info", [item_id], "Evidence has no source_uri; its typed paper/experiment reference remains the provenance link.")
+                add("missing_source_uri", "info", [item_id], "Evidence has no source_uri; its typed paper/experiment/source reference remains the provenance link.")
         elif typ == "mechanism":
             if not isinstance(data.get("origin"), str) or not data.get("origin", "").strip():
                 add("mechanism_missing_origin", "warning", [item_id], "Mechanism has no recorded origin; keep interpretation provenance explicit.")
@@ -449,45 +412,60 @@ def assess_quality(
             add("invalid_experiment_evidence_as_established", "warning", [item["id"], *unusable_evidence], "Evidence from an invalid or interrupted experiment is attached to an established status; this is an advisory provenance issue, not a scientific conclusion.")
 
     # Evidence IDs are provenance links, not automatic scientific support.
-    # A supported hypothesis that declares a target domain needs an explicit
-    # ``support`` role and an evidence record labelled as an observation in
-    # that exact authored target domain.  No matching is inferred from record
-    # IDs, titles, similarly named domains, or hypothesized relation edges.
-    for _key, kind, hypothesis in entity_items:
-        if kind != "record" or hypothesis.get("type") not in {"claim", "hypothesis"}:
+    # Claims, hypotheses, and mechanisms share one assertion/evidence contract:
+    # a status-directional usage role, an allowed empirical/reported evidence
+    # kind for the saved status, and exact explicitly authored applicability.
+    # It is deliberately a diagnostic: it never changes an epistemic status
+    # or asserts a scientific result is false. A legacy
+    # evidence.assertion_role is descriptive only and cannot prohibit the
+    # same evidence being used differently elsewhere.
+    for _key, kind, assertion in entity_items:
+        if kind != "record" or assertion.get("type") not in {"claim", "hypothesis", "mechanism"}:
             continue
-        hdata = hypothesis.get("data", {})
-        if not isinstance(hdata, dict) or hdata.get("status") != "supported":
+        data = assertion.get("data", {})
+        if not isinstance(data, dict):
             continue
-        support_ids = {item for item in hdata.get("evidence_ids", []) if isinstance(item, str)}
-        roles = hdata.get("evidence_roles", {}) if isinstance(hdata.get("evidence_roles", {}), dict) else {}
-        domain = _target_domain(hypothesis)
+        required_kinds = assertion_required_evidence_kinds(assertion)
+        if not required_kinds:
+            continue
+        required_roles = assertion_required_evidence_roles(assertion)
+        support_ids = {item for item in data.get("evidence_ids", []) if isinstance(item, str)}
+        domain = _target_domain(assertion)
         analogy_edges: list[str] = []
-        non_observed_relation_evidence: set[str] = set()
         for _edge_key, edge_kind, edge in entity_items:
-            if edge_kind != "edge" or edge.get("status") != "hypothesized" or hypothesis["id"] not in {edge.get("source"), edge.get("target")}:
+            if edge_kind != "edge" or edge.get("status") != "hypothesized" or assertion["id"] not in {edge.get("source"), edge.get("target")}:
                 continue
             if edge.get("relation") == "analogous_to":
                 analogy_edges.append(edge["id"])
-            if edge.get("relation") in {"analogous_to", "limits"}:
-                non_observed_relation_evidence.update(item for item in edge.get("evidence_ids", []) if isinstance(item, str))
-        direct_target_evidence = {
+        qualified = {
             evidence_id for evidence_id in support_ids
-            if evidence_id not in non_observed_relation_evidence
-            and roles.get(evidence_id) == "support"
-            and isinstance(record_by_id.get(evidence_id), dict)
-            and domain is not None
-            and _evidence_is_direct_target_observation(record_by_id[evidence_id], hypothesis)
+            if isinstance(record_by_id.get(evidence_id), dict)
+            and record_by_id[evidence_id].get("type") == "evidence"
+            and is_qualified_assertion_evidence(assertion, record_by_id[evidence_id])
         }
-        if domain is None or not direct_target_evidence:
+        if domain is None or not qualified:
+            kind_text = ", ".join(sorted(required_kinds))
+            role_text = ", ".join(sorted(required_roles))
             detail = (
-                "no target_domain/applicability.domain is recorded"
+                "no applicability domain is recorded"
                 if domain is None else
-                "no evidence has both evidence_roles[id]='support' and explicit target_observation applicability matching the target domain"
+                "no evidence has an assertion-direction evidence_roles[id] "
+                f"({role_text}), an allowed evidence_kind ({kind_text}), and exact explicitly authored applicability"
             )
-            code = "transfer_support_gap" if hypothesis.get("type") == "hypothesis" else "claim_target_support_gap"
-            noun = "hypothesis" if hypothesis.get("type") == "hypothesis" else "claim"
-            add(code, "warning", [hypothesis["id"], *sorted(support_ids), *sorted(analogy_edges)], f"Supported target {noun} has {detail}; source-domain evidence, counterevidence, and hypothesized analogy/limits are provenance only, not observed target support. This advisory does not alter status or require a local experiment.", subject_id=hypothesis["id"], subject_kind="record")
+            typ = str(assertion.get("type"))
+            code = {
+                "hypothesis": "transfer_support_gap",
+                "claim": "claim_target_support_gap",
+                "mechanism": "mechanism_evidence_qualification_gap",
+            }[typ]
+            noun = "hypothesis" if typ == "hypothesis" else typ
+            add(
+                code,
+                "warning",
+                [assertion["id"], *sorted(support_ids), *sorted(analogy_edges)],
+                f"Established {noun} has {detail}; source-domain evidence and hypothesized analogy/limits remain provenance only unless they meet this assertion's explicit role and scope. This advisory does not alter status or require a local experiment.",
+                subject_id=assertion["id"], subject_kind="record",
+            )
 
     # Explicit support and contradiction to the same target are intentionally
     # retained.  Differing conditions make the pair a potential disagreement,
@@ -506,11 +484,11 @@ def assess_quality(
                 target_scope = target if _target_domain(target) is not None else edge
                 for evidence_id in edge.get("evidence_ids", []) if isinstance(edge.get("evidence_ids", []), list) else []:
                     evidence = record_by_id.get(evidence_id)
-                    compatibility = _applicability_compatibility(evidence, target_scope) if isinstance(evidence, dict) else "unknown"
-                    if compatibility != "match":
-                        code = "edge_evidence_applicability_mismatch" if compatibility == "mismatch" else "edge_evidence_applicability_unknown"
-                        detail = "conflicts with" if compatibility == "mismatch" else "does not fully state"
-                        add(code, "warning", [edge["id"], str(edge.get("target")), evidence_id], f"Observed/reported assertion edge evidence {detail} explicit domain/task/condition applicability for the relation target. This is a provenance warning, not a finding about the underlying science.", subject_id=edge["id"], subject_kind="edge")
+                    comparison = compare_recorded_applicability(evidence, target_scope) if isinstance(evidence, dict) else "unknown"
+                    if comparison != "match":
+                        code = "edge_evidence_applicability_different" if comparison == "different" else "edge_evidence_applicability_unknown"
+                        detail = "differs in recorded domain/task/condition fields" if comparison == "different" else "has incomplete or unknown recorded domain/task/condition fields"
+                        add(code, "warning", [edge["id"], str(edge.get("target")), evidence_id], f"Observed/reported assertion edge evidence {detail} for the relation target. This is recorded-field bookkeeping, not scientific incompatibility or proof of semantic equivalence; scientific applicability remains unverified.", subject_id=edge["id"], subject_kind="edge")
     for target, grouped in sorted(assertions.items()):
         if grouped["supports"] and grouped["contradicts"]:
             supporting = grouped["supports"]

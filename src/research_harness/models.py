@@ -13,7 +13,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 RECORD_TYPES = {
-    "paper", "problem", "method", "technique", "mechanism", "claim",
+    "paper", "source", "problem", "method", "technique", "mechanism", "claim",
     "evidence", "hypothesis", "experiment", "result", "limitation",
     "decision", "search",
 }
@@ -21,21 +21,43 @@ EDGE_STATUSES = {"reported", "observed", "hypothesized", "structural"}
 EDGE_RELATIONS = {
     "cites", "addresses", "uses", "motivates", "proposes_mechanism", "tests",
     "produces", "supports", "contradicts", "limits", "analogous_to",
-    "derived_from", "has_evidence",
+    "derived_from", "has_evidence", "revises",
 }
-STRUCTURAL_RELATIONS = {"cites", "has_evidence", "tests", "produces", "derived_from"}
+STRUCTURAL_RELATIONS = {"cites", "has_evidence", "tests", "produces", "derived_from", "revises"}
 
 _READ_SCOPES = {"metadata", "abstract", "sections", "fulltext"}
 _CLAIM_STATUSES = {"proposed", "reported", "supported", "contradicted", "inconclusive"}
 _HYPOTHESIS_STATUSES = {"proposed", "active", "supported", "contradicted", "inconclusive", "parked"}
 _EXPERIMENT_STATUSES = {"planned", "running", "completed", "invalid", "interrupted"}
-_ASSERTION_ROLES = {
+ASSERTION_ROLES = frozenset({
     "source_observation", "target_observation", "source_assertion",
     "target_assertion", "transfer_proposal", "analogy", "limitation",
     "interpretation",
-}
-_EVIDENCE_KINDS = {"observation", "author_report", "interpretation", "planned"}
-_EVIDENCE_ROLES = {"support", "counterevidence", "context", "analogy"}
+})
+# ``observation`` and ``interpretation`` are legacy aliases retained so an
+# existing local research store remains readable.  New Skills write the
+# explicit taxonomy: a checked source passage, an author's reported result,
+# an author's mechanism interpretation, a locally measured observation, or a
+# plan.  The distinction prevents paper reading from being represented as an
+# independent observation of the underlying phenomenon.
+EVIDENCE_KINDS = frozenset({
+    "source_excerpt", "author_report", "author_interpretation",
+    "local_observation", "planned",
+    "observation", "interpretation", "unknown",
+})
+# A role is the direction in which one assertion uses one evidence item.  It
+# is deliberately separate from ``evidence_kind``: an author report and a
+# local observation may each support, limit, or leave a particular assertion
+# inconclusive.  The explicit neutral role avoids forcing a genuinely
+# indeterminate measurement to masquerade as either positive support or a
+# counterexample.
+EVIDENCE_ROLES = frozenset({"support", "counterevidence", "inconclusive", "context", "analogy"})
+
+# ``remember --compact-template`` uses these impossible-to-mistake markers
+# instead of fabricating source content.  Reject them at the model boundary so
+# a template can be inspected/expanded but cannot accidentally become durable
+# research memory through either compact or raw writeback.
+_TEMPLATE_PLACEHOLDER_PREFIX = "__SRH_TEMPLATE_"
 
 
 def canonical_json(value: Any) -> str:
@@ -85,7 +107,7 @@ def record_dependency_refs(record: dict[str, Any]) -> list[str]:
     refs: list[Any] = []
     typ = record.get("type")
     if typ == "evidence":
-        refs.append(data.get("paper_id") or data.get("experiment_id"))
+        refs.append(data.get("source_id") or data.get("paper_id") or data.get("experiment_id"))
     elif typ == "result":
         refs.append(data.get("experiment_id"))
     refs.extend(data.get("evidence_ids", []) if isinstance(data.get("evidence_ids", []), list) else [])
@@ -142,6 +164,23 @@ def _dict(value: Any, path: str) -> dict[str, Any]:
     return value
 
 
+def _reject_template_placeholders(value: Any, path: str) -> None:
+    """Reject the reserved authoring markers anywhere in a persisted record."""
+
+    if isinstance(value, str):
+        if _TEMPLATE_PLACEHOLDER_PREFIX in value:
+            raise _err(path, "contains an unreplaced SRH template placeholder")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_template_placeholders(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_template_placeholders(key, f"{path} key")
+            _reject_template_placeholders(item, f"{path}.{key}")
+
+
 def _basis(value: Any, path: str) -> dict[str, str]:
     basis = _dict(value, path)
     out: dict[str, str] = {}
@@ -174,7 +213,8 @@ def _validate_applicability(container: dict[str, Any], path: str) -> None:
     ``source_domain``, ``target_domain``, and ``task_context`` are authored
     provenance labels.  They are deliberately not normalized, resolved, or
     compared here: a person/Codex must explicitly state applicability and the
-    quality layer can later report a mismatch.  Unknown object keys are kept
+    quality layer can later report recorded differences, not scientific
+    incompatibility. Unknown object keys are kept
     for forward-compatible schema-v1 imports.
     """
 
@@ -187,14 +227,14 @@ def _validate_applicability(container: dict[str, Any], path: str) -> None:
             _dict(applicability["conditions"], f"{path}.applicability.conditions")
     if "assertion_role" in container:
         role = _string(container["assertion_role"], f"{path}.assertion_role", nonempty=True)
-        if role not in _ASSERTION_ROLES:
+        if role not in ASSERTION_ROLES:
             raise _err(f"{path}.assertion_role", "must be a recognized explicit assertion role")
     if "evidence_roles" in container:
         roles = _dict(container["evidence_roles"], f"{path}.evidence_roles")
         for evidence_id, role in roles.items():
             _string(evidence_id, f"{path}.evidence_roles key", nonempty=True)
-            if not isinstance(role, str) or role not in _EVIDENCE_ROLES:
-                raise _err(f"{path}.evidence_roles[{evidence_id!r}]", "must be support, counterevidence, context, or analogy")
+            if not isinstance(role, str) or role not in EVIDENCE_ROLES:
+                raise _err(f"{path}.evidence_roles[{evidence_id!r}]", "must be support, counterevidence, inconclusive, context, or analogy")
 
 
 def normalize_record(record: Any, path: str = "record") -> dict[str, Any]:
@@ -223,6 +263,7 @@ def normalize_record(record: Any, path: str = "record") -> dict[str, Any]:
         json.loads(canonical_json(out))
     except (TypeError, ValueError) as exc:
         raise _err(path, f"contains non-JSON data ({exc})") from exc
+    _reject_template_placeholders(out, path)
     out["data"] = json.loads(canonical_json(data))
     if "basis" in out["data"]:
         out["data"]["basis"] = _basis(out["data"]["basis"], f"{path}.data.basis")
@@ -244,11 +285,19 @@ def _validate_record_data(record: dict[str, Any]) -> None:
             raise _err(f"{path}.read_scope", "must be metadata, abstract, sections, or fulltext")
         if "read_sections" in d:
             _list_of_strings(d["read_sections"], f"{path}.read_sections")
+    elif typ == "source":
+        # A source is intentionally a small, generic provenance anchor for
+        # material which is not a paper or an experiment (for example a task
+        # brief, dataset card, lab notebook, protocol, or supplied document).
+        # ``kind`` is an authored label, not a closed taxonomy: callers must
+        # say what it is without the schema pretending to classify it.
+        _string(d.get("kind"), f"{path}.kind", nonempty=True)
     elif typ == "evidence":
-        has_paper = isinstance(d.get("paper_id"), str) and bool(d.get("paper_id"))
-        has_exp = isinstance(d.get("experiment_id"), str) and bool(d.get("experiment_id"))
-        if has_paper == has_exp:
-            raise _err(path, "evidence requires exactly one paper_id or experiment_id")
+        has_source = isinstance(d.get("source_id"), str) and bool(d.get("source_id").strip())
+        has_paper = isinstance(d.get("paper_id"), str) and bool(d.get("paper_id").strip())
+        has_exp = isinstance(d.get("experiment_id"), str) and bool(d.get("experiment_id").strip())
+        if sum((has_source, has_paper, has_exp)) != 1:
+            raise _err(path, "evidence requires exactly one source_id, paper_id, or experiment_id")
         # Older exports may lack a locator/excerpt.  This is important enough
         # to report in ``quality()``, but it is not a broken reference or a
         # reason to lose otherwise durable legacy provenance during import.
@@ -259,8 +308,11 @@ def _validate_record_data(record: dict[str, Any]) -> None:
         for k in ("source_uri", "source_hash", "verification"):
             if k in d and not isinstance(d[k], (str, dict)):
                 raise _err(f"{path}.{k}", "must be a string or object")
-        if "evidence_kind" in d and d["evidence_kind"] not in _EVIDENCE_KINDS:
-            raise _err(f"{path}.evidence_kind", "must be observation, author_report, interpretation, or planned")
+        if "evidence_kind" in d and d["evidence_kind"] not in EVIDENCE_KINDS:
+            raise _err(
+                f"{path}.evidence_kind",
+                "must be source_excerpt, author_report, author_interpretation, local_observation, planned, unknown, or a legacy alias",
+            )
     elif typ == "claim":
         if d.get("origin") not in {"author", "assistant", "user"}:
             raise _err(f"{path}.origin", "must be author, assistant, or user")
@@ -342,6 +394,7 @@ def _validate_record_data(record: dict[str, Any]) -> None:
 
 def normalize_edge(edge: Any, path: str = "edge") -> dict[str, Any]:
     e = _dict(edge, path)
+    _reject_template_placeholders(e, path)
     for key in ("id", "source", "target", "relation", "status", "evidence_ids", "conditions"):
         if key not in e:
             raise _err(f"{path}.{key}", "is required")
@@ -366,10 +419,12 @@ def normalize_edge(edge: Any, path: str = "edge") -> dict[str, Any]:
         out["evidence_roles"] = _dict(e["evidence_roles"], f"{path}.evidence_roles")
     if out["relation"] not in EDGE_RELATIONS:
         raise _err(f"{path}.relation", f"unsupported relation {out['relation']!r}")
+    if out["relation"] == "revises" and out["source"] == out["target"]:
+        raise _err(f"{path}.target", "a decision cannot revise itself; use a distinct decision record")
     if out["status"] not in EDGE_STATUSES:
-        raise _err(f"{path}.status", "has an invalid edge status")
+        raise _err(f"{path}.status", "has an invalid edge status; must be " + ", ".join(sorted(EDGE_STATUSES)))
     if out["status"] == "structural" and out["relation"] not in STRUCTURAL_RELATIONS:
-        raise _err(f"{path}.status", f"structural is not valid for {out['relation']!r}")
+        raise _err(f"{path}.status", f"structural is not valid for {out['relation']!r}; author reported, observed, or hypothesized as appropriate")
     _validate_applicability(out, path)
     try:
         json.loads(canonical_json(out))

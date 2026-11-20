@@ -79,7 +79,6 @@ def _preload_for_reference(store: ResearchStore, skill: str) -> None:
         records = [
             _record("paper:source", "paper", {"read_scope": "abstract"}),
             _record("paper:opposing", "paper", {"read_scope": "abstract"}),
-            _record("paper:target", "paper", {"read_scope": "abstract"}),
             _record("evidence:source", "evidence", {"paper_id": "paper:source", "locator": "Abstract, paragraph 1", "excerpt": "Synthetic source observation."}),
             _record("evidence:opposing", "evidence", {"paper_id": "paper:opposing", "locator": "Abstract, paragraph 2", "excerpt": "Synthetic opposing observation."}),
             _record("claim:source", "claim", {"origin": "author", "status": "reported", "evidence_ids": ["evidence:source"], "conditions": [], "alternative_explanations": []}),
@@ -93,6 +92,7 @@ def _preload_for_reference(store: ResearchStore, skill: str) -> None:
             _record("paper:counterexample", "paper", {"read_scope": "abstract"}),
             _record("evidence:counterexample", "evidence", {"paper_id": "paper:counterexample", "locator": "Abstract, paragraph 1", "excerpt": "Synthetic counterexample."}),
             _record("hypothesis:target", "hypothesis", {"prediction": "Synthetic intervention changes outcome.", "alternatives": ["Synthetic alternative."], "test": "Synthetic comparison.", "status": "proposed", "evidence_ids": []}),
+            _record("decision:previous", "decision", {"reason": "Evaluate the conditional target route.", "next_action": "Clarify its boundary.", "evidence_ids": []}),
         ]
     else:
         return
@@ -122,15 +122,46 @@ def test_reference_json_blocks_are_schema_valid_with_their_stated_prerequisites(
             assert all({"bottleneck", "operation", "mechanism", "measurement", "boundary", "decision_changing_gap"} <= set(item) for item in comparison)
         elif skill == "srh-paper-read":
             kinds = {records[record_id]["data"]["evidence_kind"] for record_id in ("evidence:source-methods", "evidence:author-report", "evidence:author-interpretation")}
-            assert kinds == {"observation", "author_report", "interpretation"}
+            assert kinds == {"source_excerpt", "author_report", "author_interpretation"}
         elif skill == "srh-hypothesis-bridge":
             hypothesis = records["hypothesis:target"]["data"]
             assert hypothesis["evidence_roles"]["evidence:target-context"] == "context"
+            task_brief = records["source:task-brief"]
+            target_context = records["evidence:target-context"]["data"]
+            assert task_brief["type"] == "source"
+            assert task_brief["data"]["kind"] == "user_task_brief"
+            # The target context is anchored by a source record created in the
+            # same delta, not an empty or invented experiment reference.
+            assert target_context["source_id"] == task_brief["id"]
+            assert "paper_id" not in target_context
+            assert "experiment_id" not in target_context
             assert not any(edge["source"] == "evidence:opposing" and edge["target"] == "hypothesis:target" and edge["status"] == "observed" for edge in delta["edges"])
         elif skill == "srh-experiment":
             assert set(records["experiment:target-test"]["data"]["route_changes"]) == {"support", "contradict", "inconclusive", "invalid"}
         elif skill == "srh-checkpoint":
             assert {"current_route", "parked_alternatives", "reopen_triggers"} <= set(delta["state_patch"])
+
+
+def test_hypothesis_bridge_skill_requires_a_resolved_target_context_anchor() -> None:
+    """The live model-facing instruction must not invite a dangling evidence ref."""
+    skill = (REFERENCE_ROOT / "srh-hypothesis-bridge" / "SKILL.md").read_text(encoding="utf-8")
+    assert "exactly one" in skill
+    assert "`source` record" in skill
+    assert "`source_id`" in skill
+    assert "matching experiment" in skill
+
+
+def test_research_map_skill_requires_explicit_evidence_and_edge_basis() -> None:
+    """Map writeback must preserve unknowns instead of minting graph authority."""
+    skill = (REFERENCE_ROOT / "srh-research-map" / "SKILL.md").read_text(encoding="utf-8")
+    assert "exactly one typed source" in skill
+    assert "source_id`, or `experiment_id" in skill
+    assert "non-empty `locator`" in skill
+    assert "`evidence_kind`" in skill
+    assert "explicit `applicability` object" in skill
+    assert "literal value `unknown`" in skill
+    assert "Every explicit graph edge must carry `status`, `evidence_ids`, and `conditions`" in skill
+    assert "must never upgrade" in skill
 
 
 def test_fresh_process_offline_workflow_retains_negative_evidence_and_detects_drift(tmp_path: Path) -> None:

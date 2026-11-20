@@ -99,7 +99,17 @@ def test_ingest_graph_contradiction_state_context_and_checkpoint(project: Path, 
     assert "evidence:opposing-finding" in ids
     assert graph.get("edges")
 
-    state = json_stdout(run_srh(project, "state", "--file", str(STATE_FIXTURE)))
+    # `state --file` accepts a state patch, not a schema-bearing demo
+    # snapshot.  Use the hypothesis already installed by this fixture.
+    state_patch = tmp_path / "state-patch.json"
+    state_patch.write_text(json.dumps({
+        "question": "When is the synthetic cue-gating mechanism transferable across contexts?",
+        "active_hypotheses": ["hypothesis:cross-domain-bridge"],
+        "unresolved_hypotheses": ["hypothesis:cross-domain-bridge"],
+        "recent_decisions": ["decision:retain-opposition"],
+        "notes": ["integration"],
+    }), encoding="utf-8")
+    state = json_stdout(run_srh(project, "state", "--file", str(state_patch)))
     assert "question" in state or state.get("state", {}).get("question")
     context = run_srh(project, "context", "--query", "target toy task", "--max-chars", "5000").stdout
     assert len(context) <= 5000
@@ -185,6 +195,8 @@ def test_wheel_contains_packaged_skill_assets(tmp_path: Path) -> None:
         cwd=str(ROOT),
         env=_env(),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=180,
     )

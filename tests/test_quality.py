@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from research_harness.models import normalize_bundle
+from research_harness.semantics import applicability_compatibility
 from research_harness.store import ResearchStore
 
 
@@ -141,8 +142,8 @@ def test_reported_edge_and_supported_claim_need_explicit_target_applicability(tm
         store.apply_delta({"schema_version": 1, "records": [source, source_evidence, target_claim], "edges": [edge]})
         report = store.quality("claim:target")
         assert "claim_target_support_gap" in codes(report)
-        mismatch = next(finding for finding in report["findings"] if finding["code"] == "edge_evidence_applicability_mismatch")
-        assert mismatch["subject_id"] == "edge:reported"
+        difference = next(finding for finding in report["findings"] if finding["code"] == "edge_evidence_applicability_different")
+        assert difference["subject_id"] == "edge:reported"
 
         target_paper = paper("paper:target", "10/target", "fulltext")
         target_evidence = evidence("evidence:target", "paper:target")
@@ -153,7 +154,7 @@ def test_reported_edge_and_supported_claim_need_explicit_target_applicability(tm
         store.apply_delta({"schema_version": 1, "records": [target_paper, target_evidence, upgraded_claim], "edges": [upgraded_edge]})
         upgraded_report = store.quality("claim:target")
         assert "claim_target_support_gap" not in codes(upgraded_report)
-        assert not any(finding.get("subject_id") == "edge:reported" and finding["code"] in {"edge_evidence_applicability_mismatch", "edge_evidence_applicability_unknown"} for finding in upgraded_report["findings"])
+        assert not any(finding.get("subject_id") == "edge:reported" and finding["code"] in {"edge_evidence_applicability_different", "edge_evidence_applicability_unknown"} for finding in upgraded_report["findings"])
 
 
 def test_applicability_conditions_must_be_object_and_unknown_conditions_do_not_support(tmp_path: Path) -> None:
@@ -172,7 +173,101 @@ def test_applicability_conditions_must_be_object_and_unknown_conditions_do_not_s
         assert "transfer_support_gap" in codes(store.quality("hypothesis:h"))
 
 
-def test_hypothesized_limit_evidence_never_becomes_target_support(tmp_path: Path) -> None:
+def test_explicit_unknown_evidence_fields_are_admissible_but_never_qualify(tmp_path: Path) -> None:
+    source = paper("paper:unknown", "10/unknown", "fulltext")
+    observed = evidence("evidence:unknown-kind", "paper:unknown")
+    observed["data"].update({
+        "evidence_kind": "unknown",
+        "locator": "unknown",
+        "applicability": {"domain": "unknown", "conditions": {}},
+    })
+    hypothesis = {
+        "id": "hypothesis:unknown", "type": "hypothesis", "title": "h", "summary": "h", "tags": [],
+        "data": {"prediction": "p", "alternatives": [], "test": "t", "status": "supported",
+                 "evidence_ids": ["evidence:unknown-kind"],
+                 "evidence_roles": {"evidence:unknown-kind": "support"},
+                 "applicability": {"domain": "target", "conditions": {}}},
+    }
+    with ResearchStore(tmp_path, create=True) as store:
+        store.apply_delta({"schema_version": 1, "records": [source, observed, hypothesis], "edges": []})
+        report = store.quality("hypothesis:unknown")
+        assert "transfer_support_gap" in codes(report)
+        assert "unknown_evidence_kind" in codes(report)
+        assert "unknown_applicability" in codes(report)
+        assert store.get_record("hypothesis:unknown")["data"]["status"] == "supported"
+
+
+def test_applicability_is_unknown_for_partial_conditions_and_different_for_unequal_values() -> None:
+    assertion = {"data": {"applicability": {"domain": "target", "conditions": {"cohort": "A", "device": "x"}}}}
+    partial = {"data": {"applicability": {"domain": "target", "conditions": {"cohort": "A"}}}}
+    conflict = {"data": {"applicability": {"domain": "target", "conditions": {"cohort": "B", "device": "x"}}}}
+    exact = {"data": {"applicability": {"domain": "target", "conditions": {"cohort": "A", "device": "x"}}}}
+    assert applicability_compatibility(partial, assertion) == "unknown"
+    assert applicability_compatibility(conflict, assertion) == "different"
+    assert applicability_compatibility(exact, assertion) == "match"
+
+
+def test_applicability_does_not_hide_a_known_nested_difference_when_other_scope_is_missing() -> None:
+    """A missing domain cannot erase unequal saved split values."""
+
+    assertion = {
+        "data": {
+            "applicability": {
+                "conditions": {"split": {"seed": 7, "fold": 0}},
+            },
+        },
+    }
+    evidence = {
+        "data": {
+            "applicability": {
+                "domain": "target",
+                "conditions": {"split": {"seed": 8}},
+            },
+        },
+    }
+    assert applicability_compatibility(evidence, assertion) == "different"
+
+
+def test_mechanism_uses_the_same_status_specific_evidence_contract(tmp_path: Path) -> None:
+    source = paper("paper:m", "10/m", "fulltext")
+    author_interpretation = evidence("evidence:interpretation", "paper:m")
+    author_interpretation["data"].update({
+        "evidence_kind": "author_interpretation",
+        "applicability": {"domain": "source", "conditions": {}},
+    })
+    mechanism = {
+        "id": "mechanism:m", "type": "mechanism", "title": "m", "summary": "m", "tags": [],
+        "data": {
+            "origin": "author", "status": "reported", "conditions": ["source"],
+            "evidence_ids": ["evidence:interpretation"],
+            "evidence_roles": {"evidence:interpretation": "support"},
+            "applicability": {"domain": "source", "conditions": {}},
+        },
+    }
+    with ResearchStore(tmp_path, create=True) as store:
+        store.apply_delta({"schema_version": 1, "records": [source, author_interpretation, mechanism], "edges": []})
+        assert "mechanism_evidence_qualification_gap" not in codes(store.quality("mechanism:m"))
+
+        supported = dict(mechanism)
+        supported["data"] = dict(mechanism["data"], status="supported")
+        store.apply_delta({"schema_version": 1, "records": [supported], "edges": []})
+        assert "mechanism_evidence_qualification_gap" in codes(store.quality("mechanism:m"))
+
+        local = evidence("evidence:local", "paper:m")
+        local["data"].update({
+            "evidence_kind": "local_observation",
+            "applicability": {"domain": "source", "conditions": {}},
+        })
+        qualified = dict(supported)
+        qualified["data"] = dict(
+            supported["data"], evidence_ids=["evidence:local"],
+            evidence_roles={"evidence:local": "support"},
+        )
+        store.apply_delta({"schema_version": 1, "records": [local, qualified], "edges": []})
+        assert "mechanism_evidence_qualification_gap" not in codes(store.quality("mechanism:m"))
+
+
+def test_hypothesized_limit_usage_does_not_pollute_local_supported_assertion(tmp_path: Path) -> None:
     source = paper("paper:p", "10/p", "fulltext")
     observed = evidence("evidence:target", "paper:p")
     observed["data"].update({"evidence_kind": "observation", "assertion_role": "target_observation", "applicability": {"domain": "target", "conditions": {}}})
@@ -181,4 +276,45 @@ def test_hypothesized_limit_evidence_never_becomes_target_support(tmp_path: Path
     limit = {"id": "edge:limit", "source": "evidence:target", "target": "hypothesis:h", "relation": "limits", "status": "hypothesized", "evidence_ids": ["evidence:target"], "conditions": {}}
     with ResearchStore(tmp_path, create=True) as store:
         store.apply_delta({"schema_version": 1, "records": [source, observed, hypothesis], "edges": [limit]})
-        assert "transfer_support_gap" in codes(store.quality("hypothesis:h"))
+        # The evidence is support for this assertion. Its separate use in a
+        # hypothesized limit edge must not globally invalidate that local use.
+        assert "transfer_support_gap" not in codes(store.quality("hypothesis:h"))
+
+
+def test_assertion_evidence_direction_accepts_counterevidence_neutral_and_external_report(tmp_path: Path) -> None:
+    """Status direction belongs to the assertion, not the evidence record."""
+
+    source = paper("paper:external", "10/external", "fulltext")
+    reported = evidence("evidence:external-report", "paper:external")
+    reported["data"].update({
+        "evidence_kind": "author_report",
+        "applicability": {"domain": "target-domain", "conditions": {"cohort": "held-out"}},
+    })
+    contradicted = {
+        "id": "hypothesis:contradicted", "type": "hypothesis", "title": "contradicted", "summary": "", "tags": [],
+        "data": {
+            "prediction": "The intervention improves the target score.", "alternatives": [],
+            "test": "Inspect the matched external comparison.", "status": "contradicted",
+            "evidence_ids": ["evidence:external-report"],
+            "evidence_roles": {"evidence:external-report": "counterevidence"},
+            "applicability": {"domain": "target-domain", "conditions": {"cohort": "held-out"}},
+        },
+    }
+    with ResearchStore(tmp_path, create=True) as store:
+        store.apply_delta({"schema_version": 1, "records": [source, reported, contradicted], "edges": []})
+        # An attributed external report is not relabelled as local, but it is
+        # valid direct empirical provenance when its use and scope are explicit.
+        assert "transfer_support_gap" not in codes(store.quality("hypothesis:contradicted"))
+
+        inconclusive = dict(contradicted)
+        inconclusive["id"] = "hypothesis:inconclusive"
+        inconclusive["title"] = "inconclusive"
+        inconclusive["data"] = dict(
+            contradicted["data"],
+            status="inconclusive",
+            evidence_roles={"evidence:external-report": "inconclusive"},
+        )
+        store.apply_delta({"schema_version": 1, "records": [inconclusive], "edges": []})
+        # A neutral measurement must not be forced into a false positive
+        # ``support`` label merely to retain its provenance.
+        assert "transfer_support_gap" not in codes(store.quality("hypothesis:inconclusive"))
